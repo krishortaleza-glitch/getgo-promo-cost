@@ -53,20 +53,20 @@ def col(df, letter):
 
 
 def add_key(*parts):
-    """Concatenate aligned Series values while preserving literal separators."""
+    """Concatenate scalar values and/or aligned pandas Series."""
     series_parts = [part for part in parts if isinstance(part, pd.Series)]
 
     if not series_parts:
-        return ''.join(str(part) if part is not None else '' for part in parts)
+        return ''.join(norm(part) for part in parts)
 
     result = pd.Series('', index=series_parts[0].index, dtype='object')
 
     for part in parts:
-        if isinstance(part, pd.Series):
-            result = result + norm(part).reindex(result.index, fill_value='')
+        normalized = norm(part)
+        if isinstance(normalized, pd.Series):
+            result = result + normalized.reindex(result.index, fill_value='')
         else:
-            # Preserve separators such as " "; do not strip them.
-            result = result + (str(part) if part is not None else '')
+            result = result + normalized
 
     return result
 
@@ -78,15 +78,15 @@ def process(cost, raw, aliases):
     aliases['_alias_value'] = col(aliases, 'E').str.strip()
     aliases['_cost_zone_value'] = col(aliases, 'F').str.strip()
 
-    # Raw Vendor Store Cost: X = D + ' ' + F + ' ' + C; raw key = X + A
+    # Raw Vendor Store Cost lookup key 1 = D + ' ' + F + ' ' + E + A
     raw = raw.copy()
-    raw['_raw_vendor_lookupkey'] = add_key(col(raw, 'D'), ' ', col(raw, 'F'), ' ', col(raw, 'C'), col(raw, 'A'))
+    raw['_raw_vendor_lookupkey1'] = add_key(col(raw, 'D'), ' ', col(raw, 'F'), ' ', col(raw, 'E'), col(raw, 'A'))
 
     # Separate-field link: vendor name, vendor zone, and store are matched independently.
     # This is equivalent to linking the alias lookup key to the raw vendor lookup key,
     # without concatenating the two keys into one lookup field.
     alias_index = aliases.drop_duplicates('_alias_lookupkey', keep='first').set_index('_alias_lookupkey')
-    raw['_alias_lookupkey'] = add_key(col(raw, 'D'), ' ', col(raw, 'F'), col(raw, 'A'))
+    raw['_alias_lookupkey'] = raw['_raw_vendor_lookupkey1']
     raw['_alias'] = raw['_alias_lookupkey'].map(alias_index['_alias_value']).fillna('')
     raw['_cost_zone'] = raw['_alias_lookupkey'].map(alias_index['_cost_zone_value']).fillna('')
 
@@ -132,6 +132,9 @@ def process(cost, raw, aliases):
         'raw_alias_unmatched': int((raw['_alias'] == '').sum()),
         'duplicate_alias_keys': int(aliases['_alias_lookupkey'].duplicated(keep=False).sum()),
         'duplicate_raw_final_keys': int(raw['_raw_vendor_lookupkey2'].duplicated(keep=False).sum()),
+        'raw_lookupkey1_sample': raw['_raw_vendor_lookupkey1'].head(5).tolist(),
+        'raw_lookupkey2_sample': raw['_raw_vendor_lookupkey2'].head(5).tolist(),
+        'cost_lookupkey_sample': cost['_getgo_lookupkey'].head(5).tolist(),
     }
     return cost, raw, diagnostics
 
@@ -184,6 +187,10 @@ if 'stats' in st.session_state:
     st.write(f"Unmatched raw alias links: **{s['raw_alias_unmatched']}**")
     st.write(f"Duplicate alias keys: **{s['duplicate_alias_keys']}**")
     st.write(f"Duplicate raw final keys: **{s['duplicate_raw_final_keys']}**")
+    with st.expander('Lookup key diagnostics'):
+        st.write('Raw lookup key 1:', s['raw_lookupkey1_sample'])
+        st.write('Raw lookup key 2:', s['raw_lookupkey2_sample'])
+        st.write('Cost lookup key:', s['cost_lookupkey_sample'])
     st.subheader('Output preview')
     st.dataframe(st.session_state['result'].head(100), use_container_width=True)
     st.download_button('Download GetGo Promo Cost Output', st.session_state['bytes'], 'GetGo_Promo_Cost_Output.xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', use_container_width=True)
