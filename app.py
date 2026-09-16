@@ -53,20 +53,20 @@ def col(df, letter):
 
 
 def add_key(*parts):
-    """Concatenate scalar values and/or aligned pandas Series."""
+    """Concatenate aligned Series values while preserving literal separators."""
     series_parts = [part for part in parts if isinstance(part, pd.Series)]
 
     if not series_parts:
-        return ''.join(norm(part) for part in parts)
+        return ''.join(str(part) if part is not None else '' for part in parts)
 
     result = pd.Series('', index=series_parts[0].index, dtype='object')
 
     for part in parts:
-        normalized = norm(part)
-        if isinstance(normalized, pd.Series):
-            result = result + normalized.reindex(result.index, fill_value='')
+        if isinstance(part, pd.Series):
+            result = result + norm(part).reindex(result.index, fill_value='')
         else:
-            result = result + normalized
+            # Preserve separators such as " "; do not strip them.
+            result = result + (str(part) if part is not None else '')
 
     return result
 
