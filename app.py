@@ -44,8 +44,13 @@ def process(cost, raw, aliases):
     # Link raw key 1 to aliases key. Raw vendor zone + vendor group is expected
     # to correspond to the aliases Vendor Zone value.
     alias_map = aliases.drop_duplicates('_alias_key', keep='first').set_index('_alias_key')
-    raw['_alias'] = raw['_raw_key1'].map(alias_map['E']).fillna('').astype('string')
-    raw['_cost_zone'] = raw['_raw_key1'].map(alias_map['F']).fillna('').astype('string')
+    # Map using positional Excel columns, not literal column names like 'E'/'F'.
+    alias_values = pd.Series(col(aliases, 'E').to_numpy(dtype=object), index=aliases['_alias_key'])
+    alias_cost_zones = pd.Series(col(aliases, 'F').to_numpy(dtype=object), index=aliases['_alias_key'])
+    alias_values = alias_values[~alias_values.index.duplicated(keep='first')]
+    alias_cost_zones = alias_cost_zones[~alias_cost_zones.index.duplicated(keep='first')]
+    raw['_alias'] = raw['_raw_key1'].map(alias_values).fillna('').astype('string')
+    raw['_cost_zone'] = raw['_raw_key1'].map(alias_cost_zones).fillna('').astype('string')
 
     # Raw key 2: alias + raw Column O + cost zone
     raw['_raw_key2'] = key(raw['_alias'], col(raw, 'O'), raw['_cost_zone'])
@@ -54,7 +59,6 @@ def process(cost, raw, aliases):
     cost = cost.copy()
     cost['_cost_key'] = key(col(cost, 'B'), col(cost, 'G'), col(cost, 'L'))
 
-    raw_lookup = raw.drop_duplicates('_raw_key2', keep='first').set_index('_raw_key2')[col(raw, 'N').name if False else '_raw_key2']
     # Use a separately named source series to avoid dtype/index assignment issues.
     raw_values = pd.Series(col(raw, 'N').to_numpy(dtype=object), index=raw['_raw_key2'])
     raw_values = raw_values[~raw_values.index.duplicated(keep='first')]
