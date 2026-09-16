@@ -106,8 +106,22 @@ def process(cost, raw, aliases):
     destination_idx = 14  # Excel Column O
     if destination_idx >= len(cost.columns):
         raise ValueError('Cost File does not contain Excel Column O.')
+    destination_name = cost.columns[destination_idx]
     original = cost.iloc[:, destination_idx].fillna('').astype(str)
-    cost.iloc[:, destination_idx] = matched.fillna(original).to_numpy()
+
+    # Pandas 3 / newer Streamlit environments may read CSV string columns
+    # using an Arrow-backed string dtype. Assigning a NumPy array directly
+    # into that column can raise: "Invalid value '['']' for dtype 'str'".
+    # Build a normal object-dtype Series and assign it by column name.
+    replacement = matched.astype(object).where(
+        matched.notna(),
+        original.astype(object),
+    )
+    cost[destination_name] = pd.Series(
+        replacement.to_numpy(dtype=object),
+        index=cost.index,
+        dtype=object,
+    )
 
     diagnostics = {
         'cost_rows': len(cost),
