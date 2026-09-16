@@ -25,8 +25,21 @@ def read_alias_file():
     return df.fillna(''), path.name
 
 
-def norm(series):
-    return series.astype(str).fillna('').str.strip().str.replace(r'\\s+', ' ', regex=True).str.upper()
+def norm(value):
+    """Normalize either a pandas Series or a single text value."""
+    if isinstance(value, pd.Series):
+        return (
+            value.fillna('')
+            .astype(str)
+            .str.strip()
+            .str.replace(r'\s+', ' ', regex=True)
+            .str.upper()
+        )
+
+    if value is None:
+        return ''
+
+    return ' '.join(str(value).strip().upper().split())
 
 
 def col(df, letter):
@@ -40,7 +53,22 @@ def col(df, letter):
 
 
 def add_key(*parts):
-    return ''.join(norm(p) for p in parts)
+    """Concatenate scalar values and/or aligned pandas Series."""
+    series_parts = [part for part in parts if isinstance(part, pd.Series)]
+
+    if not series_parts:
+        return ''.join(norm(part) for part in parts)
+
+    result = pd.Series('', index=series_parts[0].index, dtype='object')
+
+    for part in parts:
+        normalized = norm(part)
+        if isinstance(normalized, pd.Series):
+            result = result + normalized.reindex(result.index, fill_value='')
+        else:
+            result = result + normalized
+
+    return result
 
 
 def process(cost, raw, aliases):
@@ -70,9 +98,10 @@ def process(cost, raw, aliases):
     cost['_getgo_lookupkey'] = add_key(col(cost, 'B'), col(cost, 'G'), col(cost, 'L'))
 
     # Final lookup: return Raw Column N (endDate)
-    raw_lookup = raw.drop_duplicates('_raw_vendor_lookupkey2', keep='first').set_index('_raw_vendor_lookupkey2')[col(raw, 'N').name if False else '_raw_vendor_lookupkey2']
-    raw_values = raw.drop_duplicates('_raw_vendor_lookupkey2', keep='first').set_index('_raw_vendor_lookupkey2')
-    matched = cost['_getgo_lookupkey'].map(raw_values.assign(_raw_end_date=col(raw, 'N'))['_raw_end_date'])
+    raw_unique = raw.drop_duplicates('_raw_vendor_lookupkey2', keep='first').copy()
+    raw_unique['_raw_end_date'] = col(raw, 'N').reindex(raw_unique.index).fillna('')
+    raw_values = raw_unique.set_index('_raw_vendor_lookupkey2')['_raw_end_date']
+    matched = cost['_getgo_lookupkey'].map(raw_values)
 
     destination_idx = 14  # Excel Column O
     if destination_idx >= len(cost.columns):
