@@ -3,7 +3,7 @@ import io
 import pandas as pd
 import streamlit as st
 
-st.set_page_config(page_title='GetGo – Promo Cost', page_icon='📦', layout='wide')
+st.set_page_config(page_title='GetGo – Promo Cost', layout='wide')
 BASE = Path(__file__).resolve().parent
 ALIASES_FILE = BASE / 'VendorAliases.xlsx'
 
