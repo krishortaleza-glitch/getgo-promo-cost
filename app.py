@@ -68,6 +68,11 @@ def process(cost, raw, aliases):
     result = cost.copy()
     result.iloc[:, destination] = pd.Series(matched.fillna('').astype(object).to_numpy(), index=result.index, dtype=object)
 
+    # Remove Excel Column T from the output file, if it exists.
+    # Column T is the 20th column, so its zero-based index is 19.
+    if result.shape[1] > 19:
+        result = result.drop(columns=result.columns[19])
+
     stats = {
         'cost_rows': len(cost),
         'raw_rows': len(raw),
