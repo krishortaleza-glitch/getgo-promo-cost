@@ -3,194 +3,120 @@ import io
 import pandas as pd
 import streamlit as st
 
-st.set_page_config(page_title='GetGo - Promo Cost', page_icon='📦', layout='wide')
-BASE_DIR = Path(__file__).resolve().parent
-ALIASES_CANDIDATES = [BASE_DIR / 'VendorAliases.xlsx', BASE_DIR / 'vendor_aliases.xlsx', BASE_DIR / 'VendorAliases.csv']
+st.set_page_config(page_title='GetGo – Promo Cost', page_icon='📦', layout='wide')
+BASE = Path(__file__).resolve().parent
+ALIASES_FILE = BASE / 'VendorAliases.xlsx'
 
 
-def read_file(uploaded):
-    if uploaded.name.lower().endswith('.csv'):
-        return pd.read_csv(uploaded, dtype=str, keep_default_na=False).fillna('')
-    return pd.read_excel(uploaded, dtype=str, keep_default_na=False).fillna('')
+def read_file(upload):
+    if upload.name.lower().endswith('.csv'):
+        return pd.read_csv(upload, dtype='string', keep_default_na=False)
+    return pd.read_excel(upload, dtype='string', keep_default_na=False)
 
 
-def read_alias_file():
-    path = next((p for p in ALIASES_CANDIDATES if p.exists()), None)
-    if path is None:
-        raise FileNotFoundError('Place VendorAliases.xlsx, vendor_aliases.xlsx, or VendorAliases.csv in the repository root.')
-    if path.suffix.lower() == '.csv':
-        df = pd.read_csv(path, dtype=str, keep_default_na=False)
-    else:
-        df = pd.read_excel(path, dtype=str, keep_default_na=False)
-    return df.fillna(''), path.name
-
-
-def norm(value):
-    """Normalize either a pandas Series or a single text value."""
-    if isinstance(value, pd.Series):
-        return (
-            value.fillna('')
-            .astype(str)
-            .str.strip()
-            .str.replace(r'\s+', ' ', regex=True)
-            .str.upper()
-        )
-
-    if value is None:
-        return ''
-
-    return ' '.join(str(value).strip().upper().split())
+def clean(s):
+    return s.astype('string').fillna('').str.strip()
 
 
 def col(df, letter):
     n = 0
     for ch in letter.upper():
         n = n * 26 + ord(ch) - 64
-    idx = n - 1
-    if idx >= len(df.columns):
-        raise ValueError(f'Column {letter} is not available. File has {len(df.columns)} columns.')
-    return df.iloc[:, idx].fillna('').astype(str)
+    return clean(df.iloc[:, n - 1])
 
 
-def add_key(*parts):
-    """Concatenate scalar values and/or aligned pandas Series."""
-    series_parts = [part for part in parts if isinstance(part, pd.Series)]
-
-    if not series_parts:
-        return ''.join(norm(part) for part in parts)
-
-    result = pd.Series('', index=series_parts[0].index, dtype='object')
-
-    for part in parts:
-        normalized = norm(part)
-        if isinstance(normalized, pd.Series):
-            result = result + normalized.reindex(result.index, fill_value='')
-        else:
-            result = result + normalized
-
-    return result
+def key(*parts):
+    out = parts[0]
+    for part in parts[1:]:
+        out = out + part
+    return clean(out)
 
 
 def process(cost, raw, aliases):
-    # Vendor Aliases: lookupkey = C + ' ' + D + A
+    # Vendor Aliases: C + ' ' + D + A
     aliases = aliases.copy()
-    aliases['_alias_lookupkey'] = add_key(col(aliases, 'C'), ' ', col(aliases, 'D'), col(aliases, 'A'))
-    aliases['_alias_value'] = col(aliases, 'E').str.strip()
-    aliases['_cost_zone_value'] = col(aliases, 'F').str.strip()
+    aliases['_alias_key'] = key(col(aliases, 'C'), pd.Series(' ', index=aliases.index, dtype='string'), col(aliases, 'D'), col(aliases, 'A'))
 
-    # Raw Vendor Store Cost lookup key 1 = D + ' ' + F + ' ' + E + A
+    # Raw key 1: D + ' ' + F + ' ' + E + A
     raw = raw.copy()
-    raw['_raw_vendor_lookupkey1'] = add_key(col(raw, 'D'), ' ', col(raw, 'F'), ' ', col(raw, 'E'), col(raw, 'A'))
+    raw['_raw_key1'] = key(col(raw, 'D'), pd.Series(' ', index=raw.index, dtype='string'), col(raw, 'F'), pd.Series(' ', index=raw.index, dtype='string'), col(raw, 'E'), col(raw, 'A'))
 
-    # Separate-field link: vendor name, vendor zone, and store are matched independently.
-    # This is equivalent to linking the alias lookup key to the raw vendor lookup key,
-    # without concatenating the two keys into one lookup field.
-    alias_index = aliases.drop_duplicates('_alias_lookupkey', keep='first').set_index('_alias_lookupkey')
-    raw['_alias_lookupkey'] = raw['_raw_vendor_lookupkey1']
-    raw['_alias'] = raw['_alias_lookupkey'].map(alias_index['_alias_value']).fillna('')
-    raw['_cost_zone'] = raw['_alias_lookupkey'].map(alias_index['_cost_zone_value']).fillna('')
+    # Link raw key 1 to aliases key. Raw vendor zone + vendor group is expected
+    # to correspond to the aliases Vendor Zone value.
+    alias_map = aliases.drop_duplicates('_alias_key', keep='first').set_index('_alias_key')
+    raw['_alias'] = raw['_raw_key1'].map(alias_map['E']).fillna('').astype('string')
+    raw['_cost_zone'] = raw['_raw_key1'].map(alias_map['F']).fillna('').astype('string')
 
-    # raw.vendor.lookupkey2 = alias + O + cost zone
-    raw['_raw_vendor_lookupkey2'] = add_key(raw['_alias'], col(raw, 'O'), raw['_cost_zone'])
+    # Raw key 2: alias + raw Column O + cost zone
+    raw['_raw_key2'] = key(raw['_alias'], col(raw, 'O'), raw['_cost_zone'])
 
-    # GetGo Promo Cost lookupkey = B + G + L
+    # Cost key: B + G + L
     cost = cost.copy()
-    cost['_getgo_lookupkey'] = add_key(col(cost, 'B'), col(cost, 'G'), col(cost, 'L'))
+    cost['_cost_key'] = key(col(cost, 'B'), col(cost, 'G'), col(cost, 'L'))
 
-    # Final lookup: return Raw Column N (endDate)
-    raw_unique = raw.drop_duplicates('_raw_vendor_lookupkey2', keep='first').copy()
-    raw_unique['_raw_end_date'] = col(raw, 'N').reindex(raw_unique.index).fillna('')
-    raw_values = raw_unique.set_index('_raw_vendor_lookupkey2')['_raw_end_date']
-    matched = cost['_getgo_lookupkey'].map(raw_values)
+    raw_lookup = raw.drop_duplicates('_raw_key2', keep='first').set_index('_raw_key2')[col(raw, 'N').name if False else '_raw_key2']
+    # Use a separately named source series to avoid dtype/index assignment issues.
+    raw_values = pd.Series(col(raw, 'N').to_numpy(dtype=object), index=raw['_raw_key2'])
+    raw_values = raw_values[~raw_values.index.duplicated(keep='first')]
+    matched = cost['_cost_key'].map(raw_values)
 
-    destination_idx = 14  # Excel Column O
-    if destination_idx >= len(cost.columns):
-        raise ValueError('Cost File does not contain Excel Column O.')
-    destination_name = cost.columns[destination_idx]
-    original = cost.iloc[:, destination_idx].fillna('').astype(str)
+    destination = 14  # Excel Column O, zero-based
+    result = cost.copy()
+    result.iloc[:, destination] = pd.Series(matched.fillna('').astype(object).to_numpy(), index=result.index, dtype=object)
 
-    # Pandas 3 / newer Streamlit environments may read CSV string columns
-    # using an Arrow-backed string dtype. Assigning a NumPy array directly
-    # into that column can raise: "Invalid value '['']' for dtype 'str'".
-    # Build a normal object-dtype Series and assign it by column name.
-    replacement = matched.astype(object).where(
-        matched.notna(),
-        original.astype(object),
-    )
-    cost[destination_name] = pd.Series(
-        replacement.to_numpy(dtype=object),
-        index=cost.index,
-        dtype=object,
-    )
-
-    diagnostics = {
+    stats = {
         'cost_rows': len(cost),
         'raw_rows': len(raw),
         'alias_rows': len(aliases),
-        'matched_rows': int(matched.notna().sum()),
-        'unmatched_rows': int(matched.isna().sum()),
-        'raw_alias_unmatched': int((raw['_alias'] == '').sum()),
-        'duplicate_alias_keys': int(aliases['_alias_lookupkey'].duplicated(keep=False).sum()),
-        'duplicate_raw_final_keys': int(raw['_raw_vendor_lookupkey2'].duplicated(keep=False).sum()),
-        'raw_lookupkey1_sample': raw['_raw_vendor_lookupkey1'].head(5).tolist(),
-        'raw_lookupkey2_sample': raw['_raw_vendor_lookupkey2'].head(5).tolist(),
-        'cost_lookupkey_sample': cost['_getgo_lookupkey'].head(5).tolist(),
+        'matched': int(matched.notna().sum()),
+        'unmatched': int(matched.isna().sum()),
+        'alias_unmatched': int((raw['_alias'] == '').sum()),
     }
-    return cost, raw, diagnostics
+    diagnostics = raw[['_raw_key1', '_alias', '_cost_zone', '_raw_key2']].copy()
+    diagnostics['raw_column_N_source'] = col(raw, 'N').to_numpy(dtype=object)
+    diagnostics['raw_column_O_source'] = col(raw, 'O').to_numpy(dtype=object)
+    return result, diagnostics, stats
 
 
-def make_output(df):
-    bio = io.BytesIO()
-    with pd.ExcelWriter(bio, engine='openpyxl') as writer:
+def excel_bytes(df):
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine='openpyxl') as writer:
         df.to_excel(writer, index=False, sheet_name='GetGo Promo Cost')
-    bio.seek(0)
-    return bio.getvalue()
-
+    return buf.getvalue()
 
 st.title('GetGo – Promo Cost')
 st.caption('Populate Cost File Column O from Raw Vendor Store Cost Column N (endDate).')
 
+if not ALIASES_FILE.exists():
+    st.error(f'Missing static file: {ALIASES_FILE.name}')
+else:
+    st.success(f'Static aliases file found: {ALIASES_FILE.name}')
+
 raw_upload = st.file_uploader('Raw Vendor Store Cost', type=['csv', 'xlsx', 'xls'])
 cost_upload = st.file_uploader('Cost File', type=['csv', 'xlsx', 'xls'])
 
-alias_path = next((p for p in ALIASES_CANDIDATES if p.exists()), None)
-if alias_path:
-    st.success(f'Static Vendor Aliases file found: {alias_path.name}')
-else:
-    st.error('Static Vendor Aliases file not found in the repository root.')
-
-if st.button('Process GetGo Promo Cost', type='primary', use_container_width=True):
-    if not raw_upload or not cost_upload:
-        st.error('Upload both the Raw Vendor Store Cost and Cost File.')
-        st.stop()
+if st.button('Process GetGo Promo Cost', type='primary', disabled=not (raw_upload and cost_upload and ALIASES_FILE.exists())):
     try:
         raw_df = read_file(raw_upload)
         cost_df = read_file(cost_upload)
-        aliases_df, alias_name = read_alias_file()
-        result, processed_raw, stats = process(cost_df, raw_df, aliases_df)
-        st.session_state['result'] = result
-        st.session_state['bytes'] = make_output(result)
-        st.session_state['stats'] = stats
+        aliases_df = pd.read_excel(ALIASES_FILE, dtype='string', keep_default_na=False)
+        result, diagnostics, stats = process(cost_df, raw_df, aliases_df)
+        st.session_state.result = result
+        st.session_state.diagnostics = diagnostics
+        st.session_state.stats = stats
         st.success('Processing completed.')
     except Exception as exc:
-        st.error(str(exc))
         st.exception(exc)
 
 if 'stats' in st.session_state:
-    st.subheader('Processing summary')
-    s = st.session_state['stats']
-    a, b, c, d = st.columns(4)
-    a.metric('Cost rows', s['cost_rows'])
-    b.metric('Matched rows', s['matched_rows'])
-    c.metric('Unmatched rows', s['unmatched_rows'])
-    d.metric('Raw rows', s['raw_rows'])
-    st.write(f"Unmatched raw alias links: **{s['raw_alias_unmatched']}**")
-    st.write(f"Duplicate alias keys: **{s['duplicate_alias_keys']}**")
-    st.write(f"Duplicate raw final keys: **{s['duplicate_raw_final_keys']}**")
-    with st.expander('Lookup key diagnostics'):
-        st.write('Raw lookup key 1:', s['raw_lookupkey1_sample'])
-        st.write('Raw lookup key 2:', s['raw_lookupkey2_sample'])
-        st.write('Cost lookup key:', s['cost_lookupkey_sample'])
+    s = st.session_state.stats
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric('Cost rows', s['cost_rows'])
+    c2.metric('Matched', s['matched'])
+    c3.metric('Unmatched', s['unmatched'])
+    c4.metric('Alias unmatched', s['alias_unmatched'])
+    st.subheader('Lookup diagnostics')
+    st.dataframe(st.session_state.diagnostics, use_container_width=True)
     st.subheader('Output preview')
-    st.dataframe(st.session_state['result'].head(100), use_container_width=True)
-    st.download_button('Download GetGo Promo Cost Output', st.session_state['bytes'], 'GetGo_Promo_Cost_Output.xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', use_container_width=True)
+    st.dataframe(st.session_state.result.head(100), use_container_width=True)
+    st.download_button('Download GetGo Promo Cost', excel_bytes(st.session_state.result), 'GetGo_Promo_Cost_Output.xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
